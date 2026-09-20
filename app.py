@@ -11,12 +11,16 @@ from scraper import run_scraper
 
 # Ensure Playwright chromium binaries are present on cloud hosting platforms
 def ensure_playwright():
+    browser_env_path = os.environ.get("PLAYWRIGHT_BROWSERS_PATH")
+    if browser_env_path and os.path.exists(browser_env_path) and os.listdir(browser_env_path):
+        return
     cache_dir = os.path.expanduser("~/.cache/ms-playwright")
-    if not os.path.exists(cache_dir):
-        try:
-            subprocess.run(["playwright", "install", "chromium"], check=False)
-        except Exception:
-            pass
+    if os.path.exists(cache_dir) and os.listdir(cache_dir):
+        return
+    try:
+        subprocess.run(["playwright", "install", "chromium"], check=False)
+    except Exception:
+        pass
 
 ensure_playwright()
 

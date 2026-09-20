@@ -14,7 +14,7 @@ RUN playwright install chromium
 COPY . .
 
 # Use built-in pwuser (UID 1000) provided by the Playwright base image
-RUN chown -R pwuser:pwuser /app
+RUN mkdir -p /ms-playwright && chown -R pwuser:pwuser /app /ms-playwright
 USER pwuser
 
 # Hugging Face Spaces uses 7860; Render/others can override with PORT env var
