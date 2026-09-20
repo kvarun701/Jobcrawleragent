@@ -396,68 +396,186 @@ async def scrape_naukri(context, keyword, location, experience=None):
 async def scrape_remoteok(keyword, location="Remote", experience=None):
     jobs = []
     exp_log = f", Exp: {experience} Yrs" if experience is not None else ""
-    print(f"Scraping Remote OK for '{keyword}' (Last 24 hours{exp_log})...")
+    print(f"Scraping Remote jobs (Jobicy, Remotive, Remote OK) for '{keyword}' (Past 24h/recent{exp_log})...")
     try:
-        def fetch_api(url):
+        def fetch_json(url):
             req = urllib.request.Request(url, headers={"User-Agent": USER_AGENT})
-            with urllib.request.urlopen(req, timeout=10) as resp:
+            with urllib.request.urlopen(req, timeout=8) as resp:
                 return json.loads(resp.read().decode("utf-8"))
-        
+
         loop = asyncio.get_event_loop()
         import datetime
-        now_epoch = int(datetime.datetime.now(datetime.timezone.utc).timestamp())
+        now_dt = datetime.datetime.now(datetime.timezone.utc)
+        now_epoch = int(now_dt.timestamp())
         words = [w.lower() for w in keyword.split() if len(w) > 2]
-        
-        # Build endpoints to query: specific tag endpoints first, then fallback general endpoint
-        urls = [f"https://remoteok.com/api?tag={urllib.parse.quote(w)}" for w in words[:3]]
-        urls.append("https://remoteok.com/api")
-        
-        seen_ids = set()
-        
-        for url in urls:
-            try:
-                data = await loop.run_in_executor(None, fetch_api, url)
-                if not isinstance(data, list):
-                    continue
-                    
-                for item in data:
-                    if not isinstance(item, dict) or not item.get("position"):
-                        continue
-                    item_id = item.get("id") or item.get("url")
-                    if item_id in seen_ids:
-                        continue
-                        
-                    pos = item.get("position", "")
-                    comp = item.get("company", "")
-                    tags = " ".join(item.get("tags", [])) if isinstance(item.get("tags"), list) else ""
-                    searchable_text = f"{pos} {comp} {tags}".lower()
-                    
-                    matches = [w in searchable_text for w in words] if words else [True]
-                    if any(matches):
-                        seen_ids.add(item_id)
-                        
-                        epoch = int(item.get("epoch") or 0)
-                        diff_hours = (now_epoch - epoch) / 3600 if epoch > 0 else 999
-                        if diff_hours <= 24:
-                            posted = f"{int(diff_hours)}h ago" if diff_hours >= 1 else "Just now"
-                            recency_bonus = 10
-                        elif diff_hours <= 48:
-                            posted = "1d ago"
-                            recency_bonus = 5
-                        else:
-                            days = int(diff_hours / 24)
-                            posted = f"{days}d ago"
-                            recency_bonus = 0
+        seen_keys = set()
 
-                        exp_bonus = 0
+        # Source 1: Jobicy (Engineering / Tech Remote Jobs - frequently updated daily/hourly)
+        try:
+            jobicy_url = "https://jobicy.com/api/v2/remote-jobs?count=50&industry=engineering"
+            jobicy_data = await loop.run_in_executor(None, fetch_json, jobicy_url)
+            if isinstance(jobicy_data, dict) and "jobs" in jobicy_data:
+                for item in jobicy_data.get("jobs", []):
+                    title = item.get("jobTitle", "")
+                    company = item.get("companyName", "")
+                    desc = item.get("jobExcerpt", "")
+                    geo = item.get("jobGeo", "Remote")
+                    url = item.get("url", "")
+                    searchable = f"{title} {company} {desc} {geo}".lower()
+
+                    if words and not any(w in searchable for w in words):
+                        continue
+
+                    k_key = f"{title.lower()}_{company.lower()}"
+                    if k_key in seen_keys:
+                        continue
+                    seen_keys.add(k_key)
+
+                    pub = item.get("pubDate", "")
+                    diff_h = 999.0
+                    posted = "1d ago"
+                    if pub:
+                        try:
+                            clean_pub = pub.replace("Z", "").split("+")[0]
+                            pub_dt = datetime.datetime.fromisoformat(clean_pub).replace(tzinfo=datetime.timezone.utc)
+                            diff_h = (now_dt - pub_dt).total_seconds() / 3600.0
+                            if diff_h <= 24:
+                                posted = f"{int(diff_h)}h ago" if diff_h >= 1 else "Just now"
+                            elif diff_h <= 48:
+                                posted = "1d ago"
+                            else:
+                                posted = f"{int(diff_h/24)}d ago"
+                        except Exception:
+                            pass
+
+                    # Discard ancient listings older than 14 days
+                    if diff_h > 336:
+                        continue
+
+                    exp_text = extract_experience(title, desc)
+                    if exp_text == "Not specified" and experience is not None:
+                        exp_text = f"{experience} Yrs" if experience > 0 else "0-1 Yrs (Fresher)"
+
+                    jobs.append({
+                        "Platform": "Remote OK",
+                        "Title": title.strip(),
+                        "Company": company.strip(),
+                        "Location": (geo or "Remote").strip(),
+                        "Experience": exp_text,
+                        "Posted": posted,
+                        "Link": url,
+                        "_hours": diff_h
+                    })
+                    if len(jobs) >= 12:
+                        break
+        except Exception as e:
+            print(f"Jobicy remote notice: {e}")
+
+        # Source 2: Remotive (Curated tech remote listings)
+        try:
+            remotive_url = f"https://remotive.com/api/remote-jobs?search={urllib.parse.quote(keyword)}"
+            remotive_data = await loop.run_in_executor(None, fetch_json, remotive_url)
+            if isinstance(remotive_data, dict) and "jobs" in remotive_data:
+                for item in remotive_data.get("jobs", []):
+                    title = item.get("title", "")
+                    company = item.get("company_name", "")
+                    tags = " ".join(item.get("tags", [])) if isinstance(item.get("tags"), list) else ""
+                    loc = item.get("candidate_required_location", "Remote")
+                    url = item.get("url", "")
+                    searchable = f"{title} {company} {tags} {loc}".lower()
+
+                    if words and not any(w in searchable for w in words):
+                        continue
+
+                    k_key = f"{title.lower()}_{company.lower()}"
+                    if k_key in seen_keys:
+                        continue
+                    seen_keys.add(k_key)
+
+                    pub = item.get("publication_date", "")
+                    diff_h = 999.0
+                    posted = "1d ago"
+                    if pub:
+                        try:
+                            clean_pub = pub.replace("Z", "").split(".")[0]
+                            pub_dt = datetime.datetime.fromisoformat(clean_pub).replace(tzinfo=datetime.timezone.utc)
+                            diff_h = (now_dt - pub_dt).total_seconds() / 3600.0
+                            if diff_h <= 24:
+                                posted = f"{int(diff_h)}h ago" if diff_h >= 1 else "Just now"
+                            elif diff_h <= 48:
+                                posted = "1d ago"
+                            else:
+                                posted = f"{int(diff_h/24)}d ago"
+                        except Exception:
+                            pass
+
+                    if diff_h > 336:
+                        continue
+
+                    exp_text = extract_experience(title, tags)
+                    if exp_text == "Not specified" and experience is not None:
+                        exp_text = f"{experience} Yrs" if experience > 0 else "0-1 Yrs (Fresher)"
+
+                    jobs.append({
+                        "Platform": "Remote OK",
+                        "Title": title.strip(),
+                        "Company": company.strip(),
+                        "Location": (loc or "Remote").strip(),
+                        "Experience": exp_text,
+                        "Posted": posted,
+                        "Link": url,
+                        "_hours": diff_h
+                    })
+                    if len(jobs) >= 15:
+                        break
+        except Exception as e:
+            print(f"Remotive remote notice: {e}")
+
+        # Source 3: Remote OK API
+        try:
+            rok_urls = [f"https://remoteok.com/api?tag={urllib.parse.quote(w)}" for w in words[:2]]
+            rok_urls.append("https://remoteok.com/api")
+            for url in rok_urls:
+                try:
+                    data = await loop.run_in_executor(None, fetch_json, url)
+                    if not isinstance(data, list):
+                        continue
+                    for item in data:
+                        if not isinstance(item, dict) or not item.get("position"):
+                            continue
+                        pos = item.get("position", "")
+                        comp = item.get("company", "")
+                        tags = " ".join(item.get("tags", [])) if isinstance(item.get("tags"), list) else ""
+                        searchable = f"{pos} {comp} {tags}".lower()
+
+                        if words and not any(w in searchable for w in words):
+                            continue
+
+                        k_key = f"{pos.lower()}_{comp.lower()}"
+                        if k_key in seen_keys:
+                            continue
+                        seen_keys.add(k_key)
+
+                        epoch = int(item.get("epoch") or 0)
+                        diff_h = (now_epoch - epoch) / 3600.0 if epoch > 0 else 999.0
+
+                        # If we already have fresh jobs, skip listings older than 7 days
+                        if len(jobs) >= 5 and diff_h > 168:
+                            continue
+                        # Never display stale jobs older than 21 days (avoid 50+ day old jobs)
+                        if diff_h > 504:
+                            continue
+
+                        if diff_h <= 24:
+                            posted = f"{int(diff_h)}h ago" if diff_h >= 1 else "Just now"
+                        elif diff_h <= 48:
+                            posted = "1d ago"
+                        else:
+                            posted = f"{int(diff_h/24)}d ago"
+
                         exp_text = extract_experience(pos, tags)
-                        if experience is not None:
-                            if experience == 0 and any(w in searchable_text for w in ["junior", "entry", "intern"]):
-                                exp_bonus = 5
-                            elif experience >= 5 and any(w in searchable_text for w in ["senior", "lead", "staff", "principal"]):
-                                exp_bonus = 5
-                            if exp_text == "Not specified":
-                                exp_text = f"{experience} Yrs" if experience > 0 else "0-1 Yrs (Fresher)"
+                        if exp_text == "Not specified" and experience is not None:
+                            exp_text = f"{experience} Yrs" if experience > 0 else "0-1 Yrs (Fresher)"
 
                         jobs.append({
                             "Platform": "Remote OK",
@@ -467,25 +585,26 @@ async def scrape_remoteok(keyword, location="Remote", experience=None):
                             "Experience": exp_text,
                             "Posted": posted,
                             "Link": item.get("url", "N/A"),
-                            "_score": sum(matches) * 2 + recency_bonus + exp_bonus
+                            "_hours": diff_h
                         })
-                        if len(jobs) >= 20:
+                        if len(jobs) >= 18:
                             break
-            except Exception:
-                continue
-                
-            if len(jobs) >= 10:
-                break
-                
-        # Sort by relevance, recency, and experience match
-        jobs.sort(key=lambda x: x.get("_score", 0), reverse=True)
-        jobs = jobs[:10]
+                except Exception:
+                    continue
+                if len(jobs) >= 15:
+                    break
+        except Exception as e:
+            print(f"Remote OK API notice: {e}")
+
+        # Sort strictly by hours (ascending - freshest first)
+        jobs.sort(key=lambda x: x.get("_hours", 999.0))
+        jobs = jobs[:15]
         for j in jobs:
-            j.pop("_score", None)
-            
+            j.pop("_hours", None)
+
     except Exception as e:
         print(f"Remote OK scraping notice: {e}")
-        
+
     print(f"Remote OK returned {len(jobs)} jobs.")
     return jobs
 
@@ -548,6 +667,137 @@ async def scrape_ziprecruiter(context, keyword, location, experience=None):
     print(f"ZipRecruiter returned {len(jobs)} jobs.")
     return jobs
 
+async def scrape_instahyre(keyword, location, experience=None):
+    jobs = []
+    kw_clean = keyword.strip()
+    loc_clean = location.strip().lower()
+    exp_log = f", Exp: {experience} Yrs" if experience is not None else ""
+    print(f"Scraping Instahyre for '{kw_clean}' in '{location}' (Last 24 hours{exp_log})...")
+    
+    headers = {
+        "User-Agent": USER_AGENT,
+        "Accept": "application/json"
+    }
+    params = urllib.parse.urlencode({"skills": kw_clean})
+    url = f"https://www.instahyre.com/api/v1/job_search?{params}"
+    
+    loop = asyncio.get_event_loop()
+    def _fetch():
+        req = urllib.request.Request(url, headers=headers)
+        with urllib.request.urlopen(req, timeout=12) as resp:
+            return json.loads(resp.read().decode())
+            
+    try:
+        data = await loop.run_in_executor(None, _fetch)
+        objects = data.get("objects", [])
+        
+        matched_jobs = []
+        other_jobs = []
+        
+        for item in objects:
+            title = item.get("title") or item.get("candidate_title") or "N/A"
+            company = item.get("employer", {}).get("company_name", "N/A")
+            locs = item.get("locations", [])
+            loc_str = ", ".join(locs) if isinstance(locs, list) else str(locs)
+            link = item.get("public_url") or "N/A"
+            
+            exp_text = extract_experience(title)
+            if exp_text == "Not specified" and experience is not None:
+                exp_text = f"{experience} Yrs" if experience > 0 else "0-1 Yrs (Fresher)"
+                
+            job_item = {
+                "Platform": "Instahyre",
+                "Title": title.strip(),
+                "Company": company.strip(),
+                "Location": loc_str.strip() or "India",
+                "Experience": exp_text,
+                "Posted": "Past 24 hours",
+                "Link": link.strip()
+            }
+            
+            # Check if user location appears in job locations
+            is_loc_match = loc_clean in ["india", "any", "all", "remote"] or any(loc_clean in str(l).lower() for l in locs)
+            
+            if is_loc_match:
+                matched_jobs.append(job_item)
+            else:
+                other_jobs.append(job_item)
+                
+        # If we have location-matched jobs, use them; otherwise fallback to India-wide openings for this role
+        jobs = (matched_jobs if matched_jobs else other_jobs)[:15]
+    except Exception as e:
+        print(f"Instahyre scraping notice: {e}")
+        
+    print(f"Instahyre returned {len(jobs)} jobs.")
+    return jobs
+
+async def scrape_cutshort(context, keyword, location, experience=None):
+    jobs = []
+    kw_clean = keyword.strip()
+    loc_clean = location.strip()
+    exp_log = f", Exp: {experience} Yrs" if experience is not None else ""
+    print(f"Scraping Cutshort for '{kw_clean}' in '{loc_clean}' (Last 24 hours{exp_log})...")
+    page = None
+    try:
+        page = await context.new_page()
+        # Cutshort search URL accepts skills & locations
+        params = urllib.parse.urlencode({"skills": kw_clean, "locations": loc_clean})
+        url = f"https://cutshort.io/jobs?{params}"
+        await page.goto(url, wait_until="domcontentloaded", timeout=20000)
+        
+        try:
+            await page.wait_for_selector('a[href*="/job/"]', timeout=8000)
+        except Exception:
+            pass
+            
+        links = await page.query_selector_all('a[href*="/job/"]')
+        seen_links = set()
+        
+        for a in links:
+            href = await a.get_attribute("href")
+            text = (await a.inner_text()).strip()
+            if not href or href in seen_links:
+                continue
+            seen_links.add(href)
+            
+            clean_href = href if href.startswith("http") else f"https://cutshort.io{href}"
+            slug = clean_href.split("/job/")[-1]
+            slug_parts = slug.split("-")
+            
+            # Extract title and company from text or slug
+            title = text if text and text.lower() not in ["apply now", "view job"] else " ".join(slug_parts[:-1])
+            company = "N/A"
+            loc_val = loc_clean or "India"
+            
+            # Infer company from slug if available
+            if len(slug_parts) >= 2:
+                company = slug_parts[-2].replace("_", " ").title()
+                
+            exp_text = extract_experience(title)
+            if exp_text == "Not specified" and experience is not None:
+                exp_text = f"{experience} Yrs" if experience > 0 else "0-1 Yrs (Fresher)"
+                
+            if title.strip() and title != "N/A":
+                jobs.append({
+                    "Platform": "Cutshort",
+                    "Title": title.strip(),
+                    "Company": company.strip(),
+                    "Location": loc_val.strip(),
+                    "Experience": exp_text,
+                    "Posted": "Past 24 hours",
+                    "Link": clean_href.strip()
+                })
+                if len(jobs) >= 15:
+                    break
+    except Exception as e:
+        print(f"Cutshort scraping notice: {e}")
+    finally:
+        if page:
+            await page.close()
+            
+    print(f"Cutshort returned {len(jobs)} jobs.")
+    return jobs
+
 async def run_scraper(keyword, location, region="auto", experience=None):
     exp_log = f", Experience: {experience} Yrs" if experience is not None else ""
     print(f"Starting multi-platform scraper for '{keyword}' in '{location}' (Region: {region}{exp_log})...")
@@ -577,11 +827,13 @@ async def run_scraper(keyword, location, region="auto", experience=None):
             window.chrome = { runtime: {} };
         """)
         
-        # Run scrapers concurrently for high performance
+        # Run scrapers concurrently for high performance across 6 major platforms
         tasks = [
             scrape_linkedin(context, keyword, location, experience=experience),
             scrape_indeed(context, keyword, location, region=region, experience=experience),
             scrape_naukri(context, keyword, location, experience=experience),
+            scrape_instahyre(keyword, location, experience=experience),
+            scrape_cutshort(context, keyword, location, experience=experience),
             scrape_remoteok(keyword, location, experience=experience)
         ]
         

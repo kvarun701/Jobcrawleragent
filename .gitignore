@@ -8,3 +8,5 @@ __pycache__/
 jobs.csv
 naukri_debug.html
 .env
+audio_build/
+.streamlit/credentials.toml

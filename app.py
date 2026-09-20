@@ -3,20 +3,26 @@ import asyncio
 import pandas as pd
 import sys
 import os
+import re
 import subprocess
 import importlib
 import scraper
 importlib.reload(scraper)
 from scraper import run_scraper
 
-# Ensure Playwright chromium binaries are present on cloud hosting platforms
+# Ensure Playwright chromium binaries are located properly
 def ensure_playwright():
-    browser_env_path = os.environ.get("PLAYWRIGHT_BROWSERS_PATH")
-    if browser_env_path and os.path.exists(browser_env_path) and os.listdir(browser_env_path):
-        return
-    cache_dir = os.path.expanduser("~/.cache/ms-playwright")
-    if os.path.exists(cache_dir) and os.listdir(cache_dir):
-        return
+    possible_paths = [
+        os.environ.get("PLAYWRIGHT_BROWSERS_PATH"),
+        "/Users/varun/Library/Caches/ms-playwright",
+        os.path.expanduser("~/Library/Caches/ms-playwright"),
+        os.path.expanduser("~/.cache/ms-playwright")
+    ]
+    for p in possible_paths:
+        if p and os.path.exists(p) and os.listdir(p):
+            os.environ["PLAYWRIGHT_BROWSERS_PATH"] = p
+            return
+            
     try:
         subprocess.run(["playwright", "install", "chromium"], check=False)
     except Exception:
@@ -26,13 +32,25 @@ ensure_playwright()
 
 # Configure the page
 st.set_page_config(
-    page_title="Job Crawler Agent",
+    page_title="CrawlJobs - Search Latest 24-Hour Jobs from LinkedIn, Indeed, Naukri, Instahyre & Cutshort",
     page_icon="💼",
     layout="wide"
 )
 
-st.title("💼 Job Crawler Agent")
-st.markdown("Search for the latest job listings posted in the **past 24 hours** across **LinkedIn**, **Indeed**, **Naukri**, and **Remote OK**.")
+# SEO and OpenGraph Meta Tags for Social Sharing & Search Engines
+st.markdown("""
+<head>
+    <meta name="description" content="Search fresh jobs posted in the past 24 hours across LinkedIn, Indeed, Naukri, Instahyre, Cutshort, and Remote OK. Free multi-platform job crawler." />
+    <meta name="keywords" content="jobs, job search, linkedin jobs, indeed jobs, naukri jobs, instahyre jobs, cutshort jobs, 24 hours jobs, software engineer jobs, remote jobs" />
+    <meta property="og:title" content="CrawlJobs — One Portal for Latest 24-Hour Jobs" />
+    <meta property="og:description" content="Stop searching 10 tabs. Find freshly posted jobs from LinkedIn, Indeed, Naukri, Instahyre, Cutshort & Remote OK in one unified dashboard." />
+    <meta property="og:url" content="https://crawljobs.online/" />
+    <meta property="og:type" content="website" />
+</head>
+""", unsafe_allow_html=True)
+
+st.title("💼 CrawlJobs — Multi-Portal Job Crawler")
+st.markdown("Search for the latest verified job listings posted in the **past 24 hours** across **LinkedIn**, **Indeed**, **Naukri**, **Instahyre**, **Cutshort**, and **Remote OK**.")
 
 # User inputs
 col1, col2, col3, col4 = st.columns([2, 1.8, 1.3, 1.4])
@@ -99,16 +117,58 @@ if st.session_state["jobs_data"] is not None:
     
     if jobs:
         df = pd.DataFrame(jobs)
+
+        # Helper to parse posted date string into numeric age in hours for accurate sorting
+        def parse_posted_age_hours(val):
+            if not val or not isinstance(val, str):
+                return 9999.0
+            val_clean = val.lower().strip()
+            
+            if any(w in val_clean for w in ["just now", "few moments", "moments ago"]):
+                return 0.1
+            if any(w in val_clean for w in ["few hours ago", "today"]):
+                return 4.0
+            if "past 24 hours" in val_clean or "yesterday" in val_clean:
+                return 24.0
+                
+            m_min = re.search(r"(\d+)\s*(?:minute|min|m\b)", val_clean)
+            if m_min:
+                return float(m_min.group(1)) / 60.0
+                
+            m_hr = re.search(r"(\d+)\s*(?:hour|hr|h\b)", val_clean)
+            if m_hr:
+                return float(m_hr.group(1))
+                
+            m_day = re.search(r"(\d+)\s*(?:day|d\b)", val_clean)
+            if m_day:
+                return float(m_day.group(1)) * 24.0
+                
+            m_wk = re.search(r"(\d+)\s*(?:week|w\b)", val_clean)
+            if m_wk:
+                return float(m_wk.group(1)) * 24.0 * 7.0
+                
+            m_mo = re.search(r"(\d+)\s*(?:month|mo\b)", val_clean)
+            if m_mo:
+                return float(m_mo.group(1)) * 24.0 * 30.0
+                
+            return 999.0
+
+        # Sort posted date in ascending order (Newest/Freshest first)
+        if "Posted" in df.columns:
+            df["_age_hours"] = df["Posted"].apply(parse_posted_age_hours)
+            df = df.sort_values(by="_age_hours", ascending=True).reset_index(drop=True)
+            df = df.drop(columns=["_age_hours"])
+
         # Ensure optimal column order including Experience
         cols = [c for c in ["Platform", "Title", "Company", "Location", "Experience", "Posted", "Link"] if c in df.columns]
         other_cols = [c for c in df.columns if c not in cols]
         df = df[cols + other_cols]
         
         st.success(f"Successfully found {len(df)} jobs posted in the past 24 hours for '{q_keyword}' in '{q_location}'{exp_suffix}!")
-        st.caption(f"🕒 Listings filtered for the **past 24 hours** and **{q_exp}** (LinkedIn past 24h & experience, Indeed 1-day freshness & sort date, Naukri 1-day freshness & experience filter, Remote OK recency-ranked).")
+        st.caption(f"🕒 Listings sorted by **Posted Date (Ascending / Newest first)** and filtered for **{q_exp}**.")
         
         # Primary platforms expected by the user
-        primary_platforms = ["LinkedIn", "Indeed", "Naukri", "Remote OK"]
+        primary_platforms = ["LinkedIn", "Indeed", "Naukri", "Instahyre", "Cutshort", "Remote OK"]
         
         # Collect any additional platforms returned by the crawler (e.g., ZipRecruiter)
         scraped_platforms = list(df["Platform"].unique())
@@ -181,6 +241,10 @@ if st.session_state["jobs_data"] is not None:
                         st.caption("Tip: Indeed may occasionally prompt for a bot check. Try searching with a broader location or specific title.")
                     elif platform == "Naukri":
                         st.caption("Tip: Naukri is India's leading job portal. Try searching by city (e.g. Noida, Bengaluru, Pune, Delhi).")
+                    elif platform == "Instahyre":
+                        st.caption("Tip: Instahyre focuses on curated tech, engineering, and startup roles across India.")
+                    elif platform == "Cutshort":
+                        st.caption("Tip: Cutshort connects fast-growing tech teams and startups with developers.")
                     elif platform == "Remote OK":
                         st.caption("Tip: Remote OK specializes in remote tech listings. Try searching tags like developer, engineer, python, or react.")
                         

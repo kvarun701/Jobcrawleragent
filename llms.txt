@@ -1,0 +1,16 @@
+# CrawlJobs
+> https://crawljobs.online/
+
+CrawlJobs is a free, real-time multi-platform job crawler and aggregator designed to discover verified tech, developer, and professional jobs posted in the past 24 hours.
+
+## Key Features
+- **Multi-Source Aggregation**: Simultaneously searches and aggregates live listings from LinkedIn, Indeed, Naukri, Instahyre, Cutshort, and Remote OK.
+- **Strict 24-Hour Recency**: Eliminates expired, ghost, or stale postings by prioritizing jobs posted within the last 24 hours.
+- **Direct 1-Click Application**: Provides direct links to original verified postings on official recruiter websites without intermediaries.
+- **Zero Friction**: 100% free to use with no account registration, login, or paywall required.
+
+## Target Search Queries
+- Recent software engineer jobs India
+- Jobs posted in the last 24 hours LinkedIn Naukri Instahyre Cutshort
+- Android developer jobs Noida fresh
+- Remote developer jobs India 24 hours
